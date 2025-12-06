@@ -1,0 +1,89 @@
+image:
+  distribution: "alpinelinux"
+  release: 3.22
+  architecture: x86_64
+
+source:
+  downloader: alpinelinux-http
+  url: https://dl-cdn.alpinelinux.org/alpine/
+
+targets:
+  lxc:
+    create_message: |
+      AdGuard Home LXC
+      Web: http://0.0.0.0:3000
+files:
+  - path: /etc/.pve-ignore.resolv.conf
+    generator: dump
+    content: ""
+
+  - path: /etc/resolv.conf
+    generator: dump
+    mode: 0644
+    content: |
+      nameserver 1.1.1.1
+      nameserver 8.8.8.8
+
+  - path: /etc/periodic/daily/auto-upgrade
+    generator: dump
+    mode: 0755
+    content: |
+      #!/bin/sh
+      apk update && apk upgrade
+
+  - path: /etc/init.d/adguardhome
+    generator: dump
+    mode: 0755
+    content: |
+      #!/sbin/openrc-run
+      name="adguardhome"
+      description="AdGuard Home DNS Server"
+      command="/opt/AdGuardHome/AdGuardHome"
+      command_args="-s run"
+      pidfile="/run/adguardhome.pid"
+      command_background=true
+      depend() {
+        need net
+        after firewall
+      }
+
+packages:
+  manager: apk
+  update: true
+  cleanup: true
+  sets:
+    - packages:
+      - alpine-base
+      - openrc
+      - ca-certificates
+      - tzdata
+      action: install
+
+actions:
+  - trigger: post-packages
+    action: |-
+      #!/bin/sh
+      cd /opt
+      echo "Downloading with BusyBox wget..."
+      wget -qO- https://static.adguard.com/adguardhome/release/AdGuardHome_linux_amd64.tar.gz | tar -xz
+  
+  - trigger: post-files
+    action: |-
+      #!/bin/sh
+      set -e
+
+      echo ">>> Configuring System..."
+      
+      cp /usr/share/zoneinfo/Etc/GMT-8 /etc/localtime
+      echo "Etc/GMT-8" > /etc/timezone
+      
+      rc-update add adguardhome default
+      rc-update add networking boot
+      
+      if rc-service -e dnsmasq; then
+          rc-update del dnsmasq default || true
+      fi
+
+      rm -rf /var/cache/apk/*
+
+      echo ">>> Build Complete!"
