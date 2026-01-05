@@ -1,0 +1,177 @@
+name: Full Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., v1.0.0)'
+        required: true
+        type: string
+      prerelease:
+        description: 'Mark as pre-release'
+        required: false
+        default: false
+        type: boolean
+      draft:
+        description: 'Create as draft'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # First job: Discover and validate
+  discover:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate version format
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if ! echo "$VERSION" | grep -qE '^v?[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$'; then
+            echo "❌ Invalid version format: $VERSION"
+            exit 1
+          fi
+
+      - name: Discover config files
+        id: set-matrix
+        run: |
+          FILES=$(find config -name "*.yaml" -o -name "*.yml" | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          echo "matrix={\"config\":$FILES}" >> $GITHUB_OUTPUT
+
+  # Parallel build jobs (max 5 concurrent)
+  build:
+    needs: discover
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix: ${{ fromJson(needs.discover.outputs.matrix) }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Load version config
+        id: versions
+        run: |
+          source .distrobuilder-version
+          echo "distrobuilder_version=$DISTROBUILDER_VERSION" >> $GITHUB_OUTPUT
+          echo "go_version=$GO_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ steps.versions.outputs.go_version }}
+
+      - name: Cache distrobuilder
+        id: cache-distrobuilder
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/bin/distrobuilder
+          key: distrobuilder-${{ steps.versions.outputs.distrobuilder_version }}-${{ steps.versions.outputs.go_version }}
+
+      - name: Install distrobuilder dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            debootstrap rsync gpg squashfs-tools git make \
+            btrfs-progs dosfstools qemu-utils qemu-system-x86
+
+      - name: Build and install distrobuilder
+        if: steps.cache-distrobuilder.outputs.cache-hit != 'true'
+        env:
+          VERSION: ${{ steps.versions.outputs.distrobuilder_version }}
+        run: |
+          git clone https://github.com/lxc/distrobuilder.git /tmp/distrobuilder
+          cd /tmp/distrobuilder
+          git checkout "$VERSION"
+          make
+          sudo cp $(go env GOPATH)/bin/distrobuilder /usr/local/bin/
+
+      - name: Build image
+        env:
+          CONFIG: ${{ matrix.config }}
+        run: |
+          BASENAME=$(basename "$CONFIG" .yaml)
+          BASENAME=$(basename "$BASENAME" .yml)
+          
+          mkdir -p dist
+          
+          # Build LXC if supported
+          if grep -q "targets:" "$CONFIG" && grep -q "lxc:" "$CONFIG"; then
+            echo "🔧 Building LXC..."
+            sudo distrobuilder build-lxc "$CONFIG" dist/ || exit 1
+            [ -f "dist/rootfs.tar.xz" ] && mv dist/rootfs.tar.xz "dist/${BASENAME}-lxc-rootfs.tar.xz"
+            [ -f "dist/meta.tar.xz" ] && mv dist/meta.tar.xz "dist/${BASENAME}-lxc-metadata.tar.xz"
+            echo "✅ LXC build completed: ${BASENAME}" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # Build VM if supported
+          if grep -q "incus:" "$CONFIG" && grep -A5 "incus:" "$CONFIG" | grep -q "vm:"; then
+            echo "🔧 Building VM..."
+            sudo distrobuilder build-incus "$CONFIG" dist/ --vm || exit 1
+            [ -f "dist/disk.qcow2" ] && mv dist/disk.qcow2 "dist/${BASENAME}-vm.qcow2"
+            [ -f "dist/incus.tar.xz" ] && mv dist/incus.tar.xz "dist/${BASENAME}-vm-metadata.tar.xz"
+            echo "✅ VM build completed: ${BASENAME}" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ hashFiles(matrix.config) }}
+          path: dist/*
+
+  # Final job: Create release
+  release:
+    needs: [discover, build]
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.version }}
+          name: "Release ${{ inputs.version }}"
+          body: |
+            ## 🚀 Release ${{ inputs.version }}
+            
+            **Commit**: ${{ github.sha }}
+            
+            ### Built Images
+            - `*-lxc-rootfs.tar.xz` / `*-lxc-metadata.tar.xz` - LXC containers
+            - `*-vm.qcow2` / `*-vm-metadata.tar.xz` - VM images
+            
+            ### Usage
+            ```bash
+            # LXC
+            lxc image import <name>-lxc-metadata.tar.xz <name>-lxc-rootfs.tar.xz --alias <alias>
+            
+            # VM (Incus)
+            incus image import <name>-vm-metadata.tar.xz <name>-vm.qcow2 --alias <alias>
+            ```
+          prerelease: ${{ inputs.prerelease }}
+          draft: ${{ inputs.draft }}
+          files: dist/*
+          generate_release_notes: true
+          make_latest: ${{ !inputs.prerelease && !inputs.draft }}

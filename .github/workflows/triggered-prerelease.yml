@@ -1,0 +1,123 @@
+name: On-Push Build Validation
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - 'config/**/*.yaml'
+      - 'config/**/*.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # First job: Detect changed files
+  discover:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      skip: ${{ steps.set-matrix.outputs.skip }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Detect changed config files
+        id: set-matrix
+        run: |
+          CHANGED=$(git diff --name-only HEAD~1 HEAD -- 'config/*.yaml' 'config/*.yml' 2>/dev/null || echo "")
+          
+          if [ -z "$CHANGED" ]; then
+            echo "No config files changed"
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "matrix={\"config\":[]}" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          FILES=$(echo "$CHANGED" | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          echo "matrix={\"config\":$FILES}" >> $GITHUB_OUTPUT
+          echo "skip=false" >> $GITHUB_OUTPUT
+          echo "Changed configs: $FILES"
+
+  # Parallel build jobs (max 5 concurrent) - validates changed configs build successfully
+  build:
+    needs: discover
+    if: needs.discover.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix: ${{ fromJson(needs.discover.outputs.matrix) }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Load version config
+        id: versions
+        run: |
+          source .distrobuilder-version
+          echo "distrobuilder_version=$DISTROBUILDER_VERSION" >> $GITHUB_OUTPUT
+          echo "go_version=$GO_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ steps.versions.outputs.go_version }}
+
+      - name: Cache distrobuilder
+        id: cache-distrobuilder
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/bin/distrobuilder
+          key: distrobuilder-${{ steps.versions.outputs.distrobuilder_version }}-${{ steps.versions.outputs.go_version }}
+
+      - name: Install distrobuilder dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            debootstrap rsync gpg squashfs-tools git make \
+            btrfs-progs dosfstools qemu-utils qemu-system-x86
+
+      - name: Build and install distrobuilder
+        if: steps.cache-distrobuilder.outputs.cache-hit != 'true'
+        env:
+          VERSION: ${{ steps.versions.outputs.distrobuilder_version }}
+        run: |
+          git clone https://github.com/lxc/distrobuilder.git /tmp/distrobuilder
+          cd /tmp/distrobuilder
+          git checkout "$VERSION"
+          make
+          sudo cp $(go env GOPATH)/bin/distrobuilder /usr/local/bin/
+
+      - name: Build image
+        env:
+          CONFIG: ${{ matrix.config }}
+        run: |
+          BASENAME=$(basename "$CONFIG" .yaml)
+          BASENAME=$(basename "$BASENAME" .yml)
+          
+          mkdir -p dist
+          
+          # Build LXC if supported
+          if grep -q "targets:" "$CONFIG" && grep -q "lxc:" "$CONFIG"; then
+            echo "🔧 Building LXC..."
+            sudo distrobuilder build-lxc "$CONFIG" dist/ || exit 1
+            [ -f "dist/rootfs.tar.xz" ] && mv dist/rootfs.tar.xz "dist/${BASENAME}-lxc-rootfs.tar.xz"
+            [ -f "dist/meta.tar.xz" ] && mv dist/meta.tar.xz "dist/${BASENAME}-lxc-metadata.tar.xz"
+            echo "✅ LXC build completed: ${BASENAME}" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # Build VM if supported
+          if grep -q "incus:" "$CONFIG" && grep -A5 "incus:" "$CONFIG" | grep -q "vm:"; then
+            echo "🔧 Building VM..."
+            sudo distrobuilder build-incus "$CONFIG" dist/ --vm || exit 1
+            echo "✅ VM build completed: ${BASENAME}" >> $GITHUB_STEP_SUMMARY
+          fi

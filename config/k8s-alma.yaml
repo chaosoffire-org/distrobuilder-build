@@ -1,0 +1,228 @@
+image:
+  distribution: "almalinux"
+  release: 10
+  architecture: x86_64
+
+source:
+  downloader: almalinux-http
+  url: https://repo.almalinux.org/almalinux
+  variant: boot
+
+targets:
+  lxc:
+    create_message: |
+      Kubernetes Ready Node (AlmaLinux {{ image.release }} - Hybrid)
+      Kubernetes Version: {{ environment.variables.0.value | default:"Latest Stable" }}
+      Pre-installed: Kubeadm, Kubelet, Kubectl, Containerd
+      Type: LXC Container
+      
+      * Note: Requires "nesting=1" and "keyctl=1"
+      * Note: Set "swap=0"
+      * Note: Firewalld is DISABLED
+  incus:
+    vm:
+      size: 53687091200
+      filesystem: ext4
+
+# Define default environment variables
+# [IMPORTANT MAINTENANCE NOTE]
+# The K8S_VERSION variable MUST remain at index 0 (the first item) in this list.
+# The CI/CD pipelines and manual build commands rely on overriding this specific index via:
+#   -o environment.variables.0.value=1.30
+# If you add new variables, insert them AFTER this one.
+environment:
+  variables:
+    - key: K8S_VERSION
+      value: "latest"
+
+files:
+  - path: /etc/sysctl.d/k8s.conf
+    generator: dump
+    content: |
+      net.bridge.bridge-nf-call-iptables  = 1
+      net.bridge.bridge-nf-call-ip6tables = 1
+      net.ipv4.ip_forward                 = 1
+  
+  - path: /etc/modules-load.d/k8s.conf
+    generator: dump
+    content: |
+      overlay
+      br_netfilter
+  
+  - path: /usr/local/bin/k8s-lxc-hack.sh
+    types:
+      - container
+    generator: dump
+    mode: 0755
+    content: |
+      #!/bin/sh
+      if [ ! -e /dev/kmsg ]; then
+          ln -s /dev/console /dev/kmsg
+      fi
+      mount --make-rshared /
+  
+  - path: /etc/systemd/system/k8s-lxc-hack.service
+    types:
+      - container
+    generator: dump
+    mode: 0644
+    content: |
+      [Unit]
+      Description=Kubernetes LXC Hack
+      Before=kubelet.service containerd.service
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/k8s-lxc-hack.sh
+
+      [Install]
+      WantedBy=multi-user.target
+
+  - path: /etc/dnf/dnf.conf
+    generator: dump
+    content: |
+      [main]
+      gpgcheck=1
+      installonly_limit=3
+      clean_requirements_on_remove=True
+      best=True
+      skip_if_unavailable=False
+      fastestmirror=True
+      max_parallel_downloads=10
+
+packages:
+  manager: dnf
+  update: true
+  cleanup: true
+  sets:
+    - packages:
+        - epel-release
+        - iproute
+        - iputils
+        - procps-ng
+        - socat
+        - conntrack
+        - sudo
+        - curl
+        - wget
+        - tar
+        - vim
+        - bash-completion
+        - findutils
+        - iptables-services
+        - jq
+        - chrony
+      action: install
+    - packages:
+        - kernel
+        - grub2-pc
+        - grub2-efi-x64
+        - shim-x64
+        - dracut-config-generic
+        - NetworkManager
+      action: install
+      types:
+        - vm
+    - packages:
+        - containerd.io
+        - kubelet
+        - kubeadm
+        - kubectl
+      action: install
+      flags:
+        - --disableexcludes=kubernetes
+
+actions:
+  # 1. PRE-PACKAGE REPO SETUP (runs after unpack, BEFORE packages)
+  - trigger: post-unpack
+    pongo: true
+    action: |-
+      #!/bin/sh
+      set -e
+      
+      echo ">>> Configuring Repositories..."
+      
+      # 1.1 Docker CE Repo (Needed for containerd.io)
+      cat <<EOF > /etc/yum.repos.d/docker-ce.repo
+      [docker-ce-stable]
+      name=Docker CE Stable - \$basearch
+      baseurl=https://download.docker.com/linux/rhel/{{ image.release }}/x86_64/stable
+      enabled=1
+      gpgcheck=1
+      gpgkey=https://download.docker.com/linux/rhel/gpg
+      EOF
+
+      # 1.2 Kubernetes Repo (Needed for kubelet/kubeadm/kubectl)
+      # Access environment variable (set via environment section or CLI)
+      # Note: Shell variables are NOT pongo variables, so we use $VAR directly.
+      K8S_VER="${K8S_VERSION}"
+
+      if [ -z "$K8S_VER" ] || [ "$K8S_VER" = "latest" ]; then
+        echo ">>> Detecting latest Kubernetes stable version..."
+        
+        # Check if curl is available, install if missing (attempt using base repos)
+        if ! command -v curl >/dev/null 2>&1; then
+           echo ">>> 'curl' not found. Attempting to install..."
+           dnf install -y curl || echo ">>> Warning: Failed to install curl. Auto-detection may fail."
+        fi
+
+        if command -v curl >/dev/null 2>&1; then
+           LATEST_RAW=$(curl -L -s https://dl.k8s.io/release/stable.txt)
+           K8S_VER=$(echo $LATEST_RAW | awk -F. '{print $1"."$2}')
+           echo ">>> Found latest version: $K8S_VER"
+        else
+           echo ">>> Error: 'curl' is missing and required for auto-detection."
+           exit 1
+        fi
+      else
+        echo ">>> Using requested Kubernetes version: $K8S_VER"
+      fi
+
+      # Ensure "v" prefix
+      echo "$K8S_VER" | grep -q "^v" || K8S_VER="v$K8S_VER"
+
+      cat <<EOF > /etc/yum.repos.d/kubernetes.repo
+      [kubernetes]
+      name=Kubernetes
+      baseurl=https://pkgs.k8s.io/core:/stable:/$K8S_VER/rpm/
+      enabled=1
+      gpgcheck=1
+      gpgkey=https://pkgs.k8s.io/core:/stable:/$K8S_VER/rpm/repodata/repomd.xml.key
+      exclude=kubelet kubeadm kubectl cri-tools kubernetes-cni
+      EOF
+
+  # 2. Configure System (Post-packages)
+  - trigger: post-packages
+    action: |-
+      #!/bin/sh
+      ln -sf /usr/share/zoneinfo/Etc/GMT-8 /etc/localtime
+      systemctl disable firewalld >/dev/null 2>&1 || true
+      if [ -f /etc/selinux/config ]; then
+        sed -i 's/^SELINUX=\(enforcing\|disabled\)$/SELINUX=permissive/' /etc/selinux/config
+      fi
+      
+      # Helper: Configure Containerd logic
+      mkdir -p /etc/containerd
+      containerd config default > /etc/containerd/config.toml
+      sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
+      
+      # Enable Services
+      systemctl enable chronyd
+      systemctl enable kubelet
+      systemctl enable containerd
+
+  - trigger: post-packages
+    types:
+      - vm
+    action: |-
+      #!/bin/sh
+      systemctl enable NetworkManager
+
+  - trigger: post-packages
+    types:
+      - container
+    action: |-
+      #!/bin/sh
+      if [ -f /etc/systemd/system/k8s-lxc-hack.service ]; then
+        systemctl enable k8s-lxc-hack.service
+      fi

@@ -1,0 +1,197 @@
+name: Full Nightly Pre-release
+
+on:
+  schedule:
+    # Run every Sunday at 00:00 UTC (08:00 WST)
+    - cron: '0 0 * * 0'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (skip actual release)'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # First job: Discover all config files
+  discover:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Generate version tag (WST)
+        id: version
+        run: |
+          # Generate version in WST (UTC+8)
+          VERSION="nightly-$(TZ='Etc/GMT-8' date +'%Y%m%d')"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Discover config files
+        id: set-matrix
+        run: |
+          FILES=$(find config -name "*.yaml" -o -name "*.yml" | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          echo "matrix={\"config\":$FILES}" >> $GITHUB_OUTPUT
+          echo "Found configs: $FILES"
+
+  # Parallel build jobs (max 5 concurrent)
+  build:
+    needs: discover
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix: ${{ fromJson(needs.discover.outputs.matrix) }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Load version config
+        id: versions
+        run: |
+          source .distrobuilder-version
+          echo "distrobuilder_version=$DISTROBUILDER_VERSION" >> $GITHUB_OUTPUT
+          echo "go_version=$GO_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ steps.versions.outputs.go_version }}
+
+      - name: Cache distrobuilder
+        id: cache-distrobuilder
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/bin/distrobuilder
+          key: distrobuilder-${{ steps.versions.outputs.distrobuilder_version }}-${{ steps.versions.outputs.go_version }}
+
+      - name: Install distrobuilder dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            debootstrap rsync gpg squashfs-tools git make \
+            btrfs-progs dosfstools qemu-utils qemu-system-x86
+
+      - name: Build and install distrobuilder
+        if: steps.cache-distrobuilder.outputs.cache-hit != 'true'
+        env:
+          VERSION: ${{ steps.versions.outputs.distrobuilder_version }}
+        run: |
+          git clone https://github.com/lxc/distrobuilder.git /tmp/distrobuilder
+          cd /tmp/distrobuilder
+          git checkout "$VERSION"
+          make
+          sudo cp $(go env GOPATH)/bin/distrobuilder /usr/local/bin/
+
+      - name: Build image
+        id: build
+        env:
+          CONFIG: ${{ matrix.config }}
+        run: |
+          BASENAME=$(basename "$CONFIG" .yaml)
+          BASENAME=$(basename "$BASENAME" .yml)
+          
+          mkdir -p dist
+          BUILD_FAILED=0
+          
+          echo "=========================================="
+          echo "Building: $CONFIG"
+          echo "=========================================="
+          
+          # Build LXC if supported
+          if grep -q "targets:" "$CONFIG" && grep -q "lxc:" "$CONFIG"; then
+            echo "🔧 Building LXC..."
+            if sudo distrobuilder build-lxc "$CONFIG" dist/; then
+              [ -f "dist/rootfs.tar.xz" ] && mv dist/rootfs.tar.xz "dist/${BASENAME}-lxc-rootfs.tar.xz"
+              [ -f "dist/meta.tar.xz" ] && mv dist/meta.tar.xz "dist/${BASENAME}-lxc-metadata.tar.xz"
+              echo "✅ LXC build completed: ${BASENAME}" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "❌ LXC build failed: ${BASENAME}" >> $GITHUB_STEP_SUMMARY
+              BUILD_FAILED=1
+            fi
+          fi
+          
+          # Build VM if supported
+          if grep -q "incus:" "$CONFIG" && grep -A5 "incus:" "$CONFIG" | grep -q "vm:"; then
+            echo "🔧 Building VM..."
+            if sudo distrobuilder build-incus "$CONFIG" dist/ --vm; then
+              [ -f "dist/disk.qcow2" ] && mv dist/disk.qcow2 "dist/${BASENAME}-vm.qcow2"
+              [ -f "dist/incus.tar.xz" ] && mv dist/incus.tar.xz "dist/${BASENAME}-vm-metadata.tar.xz"
+              echo "✅ VM build completed: ${BASENAME}" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "❌ VM build failed: ${BASENAME}" >> $GITHUB_STEP_SUMMARY
+              BUILD_FAILED=1
+            fi
+          fi
+          
+          # Mark build as failed if any step failed (job will fail, artifacts won't be uploaded)
+          if [ "$BUILD_FAILED" -eq 1 ]; then
+            echo "❌ Build failed for $CONFIG, skipping artifact upload"
+            exit 1
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ hashFiles(matrix.config) }}
+          path: dist/*
+          retention-days: 30
+
+  # Final job: Create release
+  release:
+    needs: [discover, build]
+    runs-on: ubuntu-latest
+    if: ${{ !inputs.dry_run }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la dist/
+
+      - name: Delete old pre-release (atomic cleanup)
+        run: |
+          # Delete old pre-release tag atomically before creating new one
+          gh release delete pre-release --yes --cleanup-tag || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create Pre-release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: pre-release
+          name: "Nightly Pre-release ${{ needs.discover.outputs.version }}"
+          body: |
+            ## 🌙 Nightly Pre-release
+            
+            **Build Date**: ${{ github.event.repository.updated_at }}
+            **Commit**: ${{ github.sha }}
+            
+            ### Built Images
+            - `*-lxc-rootfs.tar.xz` / `*-lxc-metadata.tar.xz` - LXC containers
+            - `*-vm.qcow2` / `*-vm-metadata.tar.xz` - VM images
+            
+            > ⚠️ **Retention Policy**:
+            > - This Release entry is replaced every **7 days** (next Sunday).
+            > - Build Artifacts are retained for **30 days** in the [Actions tab](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
+          prerelease: true
+          files: dist/*
+          generate_release_notes: true
