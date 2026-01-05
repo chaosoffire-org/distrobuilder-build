@@ -25,7 +25,7 @@ jobs:
       skip: ${{ steps.set-matrix.outputs.skip }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 2
 
@@ -58,7 +58,7 @@ jobs:
     
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Load version config
         id: versions
@@ -68,13 +68,13 @@ jobs:
           echo "go_version=$GO_VERSION" >> $GITHUB_OUTPUT
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: ${{ steps.versions.outputs.go_version }}
 
       - name: Cache distrobuilder
         id: cache-distrobuilder
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: /usr/local/bin/distrobuilder
           key: distrobuilder-${{ steps.versions.outputs.distrobuilder_version }}-${{ steps.versions.outputs.go_version }}
@@ -119,5 +119,14 @@ jobs:
           if grep -q "incus:" "$CONFIG" && grep -A5 "incus:" "$CONFIG" | grep -q "vm:"; then
             echo "🔧 Building VM..."
             sudo distrobuilder build-incus "$CONFIG" dist/ --vm || exit 1
+            [ -f "dist/disk.qcow2" ] && mv dist/disk.qcow2 "dist/${BASENAME}-vm.qcow2"
+            [ -f "dist/incus.tar.xz" ] && mv dist/incus.tar.xz "dist/${BASENAME}-vm-metadata.tar.xz"
             echo "✅ VM build completed: ${BASENAME}" >> $GITHUB_STEP_SUMMARY
           fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: build-${{ hashFiles(matrix.config) }}
+          path: dist/*
+          retention-days: 30

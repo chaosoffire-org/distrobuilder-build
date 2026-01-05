@@ -33,7 +33,7 @@ jobs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Validate version format
         env:
@@ -61,7 +61,7 @@ jobs:
     
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Load version config
         id: versions
@@ -71,13 +71,13 @@ jobs:
           echo "go_version=$GO_VERSION" >> $GITHUB_OUTPUT
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: ${{ steps.versions.outputs.go_version }}
 
       - name: Cache distrobuilder
         id: cache-distrobuilder
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: /usr/local/bin/distrobuilder
           key: distrobuilder-${{ steps.versions.outputs.distrobuilder_version }}-${{ steps.versions.outputs.go_version }}
@@ -128,10 +128,11 @@ jobs:
           fi
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: build-${{ hashFiles(matrix.config) }}
           path: dist/*
+          retention-days: 30
 
   # Final job: Create release
   release:
@@ -140,10 +141,10 @@ jobs:
     
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           path: dist
           merge-multiple: true
