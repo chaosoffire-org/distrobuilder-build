@@ -21,7 +21,7 @@ targets:
       * Note: Firewalld is DISABLED
   incus:
     vm:
-      size: 53687091200
+      size: 53687091200 # 50GiB
       filesystem: ext4
 
 # Define default environment variables
@@ -89,6 +89,21 @@ files:
       skip_if_unavailable=False
       fastestmirror=True
       max_parallel_downloads=10
+  
+  - path: /root/.zshrc
+    generator: dump
+    mode: 0644
+    content: |
+      export ZSH="/root/.oh-my-zsh"
+      ZSH_THEME="robbyrussell"
+      plugins=(git kubectl kubeadm systemd zsh-autosuggestions zsh-syntax-highlighting)
+      source $ZSH/oh-my-zsh.sh
+      export LANG=en_US.UTF-8
+      alias ll='ls -lah --color=auto'
+      alias grep='grep --color=auto'
+      alias vi='vim'
+      source <(kubectl completion zsh)
+
 
 packages:
   manager: dnf
@@ -112,6 +127,8 @@ packages:
         - iptables-services
         - jq
         - chrony
+        - git
+        - zsh
       action: install
     - packages:
         - kernel
@@ -210,6 +227,27 @@ actions:
       systemctl enable chronyd
       systemctl enable kubelet
       systemctl enable containerd
+  
+  - trigger: post-packages
+    action: |-
+      #!/bin/sh
+      set -e
+      echo ">>> Installing Oh-My-Zsh & Plugins..."
+
+      if [ ! -d "/root/.oh-my-zsh" ]; then
+        git clone https://github.com/ohmyzsh/ohmyzsh.git /root/.oh-my-zsh
+      fi
+
+      PLUGIN_DIR="/root/.oh-my-zsh/custom/plugins"
+      if [ ! -d "$PLUGIN_DIR/zsh-autosuggestions" ]; then
+        git clone https://github.com/zsh-users/zsh-autosuggestions $PLUGIN_DIR/zsh-autosuggestions
+      fi
+
+      if [ ! -d "$PLUGIN_DIR/zsh-syntax-highlighting" ]; then
+        git clone https://github.com/zsh-users/zsh-syntax-highlighting.git $PLUGIN_DIR/zsh-syntax-highlighting
+      fi
+
+      usermod --shell /bin/zsh root
 
   - trigger: post-packages
     types:
