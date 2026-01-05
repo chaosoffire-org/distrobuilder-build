@@ -29,20 +29,59 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Check changes & discover configs
+        id: set-matrix
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 1. CHECK FOR CHANGES
+          git fetch --tags
+          
+          HEAD_COMMIT=$(git rev-parse HEAD)
+          
+          # Get tag for latest release (if any)
+          # 'gh' is pre-installed on ubuntu-latest runners
+          LATEST_TAG=$(gh release view --json tagName --jq .tagName 2>/dev/null || echo "")
+          LATEST_COMMIT=""
+          if [ -n "$LATEST_TAG" ]; then
+             LATEST_COMMIT=$(git rev-list -n 1 "tags/$LATEST_TAG" 2>/dev/null || echo "")
+          fi
+
+          # Get tag for pre-release (if any, usually 'pre-release')
+          PRE_RELEASE_TAG="pre-release"
+          PRE_RELEASE_COMMIT=$(git rev-list -n 1 "tags/$PRE_RELEASE_TAG" 2>/dev/null || echo "")
+          
+          echo "HEAD: $HEAD_COMMIT"
+          echo "Pre-release ($PRE_RELEASE_TAG): $PRE_RELEASE_COMMIT"
+          echo "Latest Release ($LATEST_TAG): $LATEST_COMMIT"
+          
+          if [ "$HEAD_COMMIT" = "$PRE_RELEASE_COMMIT" ] || [ "$HEAD_COMMIT" = "$LATEST_COMMIT" ]; then
+            echo "No changes detected since last release/pre-release. Skipping build."
+            echo "matrix={\"config\":[]}" >> $GITHUB_OUTPUT
+            exit 0
+          else
+            echo "Changes detected or tags missing. Proceeding with discovery."
+          fi
+          
+          # 2. DISCOVER CONFIGS
+          FILES=$(find config -name "*.yaml" -o -name "*.yml" | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          echo "matrix={\"config\":$FILES}" >> $GITHUB_OUTPUT
+          echo "Found configs: $FILES"
 
       - name: Generate version tag (WST)
         id: version
         run: |
+          if [ "${{ steps.set-matrix.outputs.matrix }}" = '{"config":[]}' ]; then
+            echo "No configs found. Skipping version generation."
+            exit 0
+          fi
+
           # Generate version in WST (UTC+8)
           VERSION="nightly-$(TZ='Etc/GMT-8' date +'%Y%m%d')"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-
-      - name: Discover config files
-        id: set-matrix
-        run: |
-          FILES=$(find config -name "*.yaml" -o -name "*.yml" | jq -R -s -c 'split("\n") | map(select(length > 0))')
-          echo "matrix={\"config\":$FILES}" >> $GITHUB_OUTPUT
-          echo "Found configs: $FILES"
 
   # Parallel build jobs (max 5 concurrent)
   build:
