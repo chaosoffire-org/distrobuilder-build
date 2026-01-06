@@ -26,6 +26,7 @@ jobs:
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
       version: ${{ steps.version.outputs.version }}
+      should_run: ${{ steps.set-matrix.outputs.should_run }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -60,22 +61,28 @@ jobs:
           
           if [ "$HEAD_COMMIT" = "$PRE_RELEASE_COMMIT" ] || [ "$HEAD_COMMIT" = "$LATEST_COMMIT" ]; then
             echo "No changes detected since last release/pre-release. Skipping build."
-            echo "matrix={\"config\":[]}" >> $GITHUB_OUTPUT
+            echo "should_run=false" >> $GITHUB_OUTPUT
             exit 0
-          else
-            echo "Changes detected or tags missing. Proceeding with discovery."
           fi
           
           # 2. DISCOVER CONFIGS
           FILES=$(find config -name "*.yaml" -o -name "*.yml" | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          
+          if [ "$FILES" = "[]" ] || [ -z "$FILES" ]; then
+             echo "No config files found."
+             echo "should_run=false" >> $GITHUB_OUTPUT
+             exit 0
+          fi
+          
+          echo "should_run=true" >> $GITHUB_OUTPUT
           echo "matrix={\"config\":$FILES}" >> $GITHUB_OUTPUT
           echo "Found configs: $FILES"
 
       - name: Generate version tag (WST)
         id: version
         run: |
-          if [ "${{ steps.set-matrix.outputs.matrix }}" = '{"config":[]}' ]; then
-            echo "No configs found. Skipping version generation."
+          if [ "${{ steps.set-matrix.outputs.should_run }}" = 'false' ]; then
+            echo "Skipping version generation."
             exit 0
           fi
 
@@ -87,6 +94,7 @@ jobs:
   build:
     needs: discover
     runs-on: ubuntu-latest
+    if: needs.discover.outputs.should_run == 'true'
     strategy:
       fail-fast: false
       max-parallel: 5
@@ -191,7 +199,7 @@ jobs:
   release:
     needs: [discover, build]
     runs-on: ubuntu-latest
-    if: ${{ !inputs.dry_run }}
+    if: ${{ !inputs.dry_run && needs.discover.outputs.should_run == 'true' }}
     
     steps:
       - name: Checkout repository
