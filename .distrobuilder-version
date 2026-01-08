@@ -1,5 +1,5 @@
 # Distrobuilder Version Control
 # Change this version to force rebuild of distrobuilder
 # Supports: tag (distrobuilder-3.2), branch (main), or commit hash (abc123def)
-DISTROBUILDER_VERSION=04b679e91ccfc60ba6a061fed94d4801f7a1036f
+DISTROBUILDER_VERSION=5c63598a5924a96501173cd36f29080cd16e8910
 GO_VERSION=1.25

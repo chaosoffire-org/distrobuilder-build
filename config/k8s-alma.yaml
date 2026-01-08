@@ -5,9 +5,16 @@ image:
 
 source:
   downloader: almalinux-http
-  url: https://repo.almalinux.org/almalinux
+  url: https://na.edge.kernel.org/almalinux
   variant: boot
-
+  keyserver: hkp://keyserver.ubuntu.com
+  keys:
+    # Almalinux 8
+    - 0x2AE81E8ACED7258B
+    # Almalinux 9
+    - 0xD36CB86CB86B3716
+    # Almalinux 10
+    - 0xDEE5C11CC2A1E572
 targets:
   lxc:
     create_message: |

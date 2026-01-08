@@ -5,7 +5,12 @@ image:
 
 source:
   downloader: alpinelinux-http
-  url: https://dl-cdn.alpinelinux.org/alpine/
+  url: https://na.edge.kernel.org/alpine
+  keyserver: hkp://keyserver.ubuntu.com
+  keys:
+    # Alpine Linux Universal Key
+    # https://alpinelinux.org/keys/ncopa.asc
+    - 0x293ACD0907D9495A
 
 targets:
   lxc:
