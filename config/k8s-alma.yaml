@@ -103,13 +103,13 @@ files:
     content: |
       export ZSH="/root/.oh-my-zsh"
       ZSH_THEME="robbyrussell"
-      plugins=(git kubectl kubeadm systemd zsh-autosuggestions zsh-syntax-highlighting)
+      plugins=(git kubectl systemd zsh-autosuggestions zsh-syntax-highlighting)
       source $ZSH/oh-my-zsh.sh
       export LANG=en_US.UTF-8
       alias ll='ls -lah --color=auto'
       alias grep='grep --color=auto'
       alias vi='vim'
-      source <(kubectl completion zsh)
+      source <(kubeadm completion zsh)
 
 
 packages:
@@ -136,6 +136,7 @@ packages:
         - chrony
         - git
         - zsh
+        - NetworkManager
       action: install
     - packages:
         - kernel
@@ -143,7 +144,6 @@ packages:
         - grub2-efi-x64
         - shim-x64
         - dracut-config-generic
-        - NetworkManager
       action: install
       types:
         - vm
@@ -234,6 +234,8 @@ actions:
       systemctl enable chronyd
       systemctl enable kubelet
       systemctl enable containerd
+
+      systemctl enable NetworkManager
   
   - trigger: post-packages
     action: |-
@@ -255,13 +257,6 @@ actions:
       fi
 
       usermod --shell /bin/zsh root
-
-  - trigger: post-packages
-    types:
-      - vm
-    action: |-
-      #!/bin/sh
-      systemctl enable NetworkManager
 
   - trigger: post-packages
     types:
