@@ -137,6 +137,7 @@ packages:
         - git
         - zsh
         - NetworkManager
+        - openssh-server
       action: install
     - packages:
         - kernel
@@ -236,6 +237,7 @@ actions:
       systemctl enable containerd
 
       systemctl enable NetworkManager
+      systemctl enable sshd
   
   - trigger: post-packages
     action: |-
