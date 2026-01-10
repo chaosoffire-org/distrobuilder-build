@@ -111,6 +111,11 @@ files:
       alias vi='vim'
       source <(kubeadm completion zsh)
 
+  - path: /etc/fstab
+    generator: dump
+    mode: 0644
+    content: |
+      bpffs /sys/fs/bpf bpf defaults 0 0
 
 packages:
   manager: dnf
@@ -138,6 +143,9 @@ packages:
         - zsh
         - NetworkManager
         - openssh-server
+        - keepalived
+        - haproxy
+        - qemu-guest-agent
       action: install
     - packages:
         - kernel
@@ -145,6 +153,9 @@ packages:
         - grub2-efi-x64
         - shim-x64
         - dracut-config-generic
+        - cloud-init
+        - cloud-utils-growpart
+        - grubby
       action: install
       types:
         - vm
@@ -220,6 +231,7 @@ actions:
   - trigger: post-packages
     action: |-
       #!/bin/sh
+      set -e
       ln -sf /usr/share/zoneinfo/Etc/GMT-8 /etc/localtime
       systemctl disable firewalld >/dev/null 2>&1 || true
       if [ -f /etc/selinux/config ]; then
@@ -265,6 +277,47 @@ actions:
       - container
     action: |-
       #!/bin/sh
+      set -e
       if [ -f /etc/systemd/system/k8s-lxc-hack.service ]; then
         systemctl enable k8s-lxc-hack.service
       fi
+  
+  - trigger: post-packages
+    types:
+      - vm
+    action: |-
+      #!/bin/sh
+      set -e
+      echo ">>> Configuring Serial Console for xterm.js..."
+      
+      systemctl enable serial-getty@ttyS0.service
+      
+      grubby --update-kernel=ALL --args="console=tty0 console=ttyS0,115200 net.ifnames=0 biosdevname=0 no_timer_check"
+      
+      if [ -f /etc/default/grub ]; then
+        sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT="quiet console=tty0 console=ttyS0,115200 net.ifnames=0 biosdevname=0 no_timer_check"/' /etc/default/grub
+        if ! grep -q "console=ttyS0" /etc/default/grub; then
+          sed -i 's/GRUB_CMDLINE_LINUX="/GRUB_CMDLINE_LINUX="console=tty0 console=ttyS0,115200 net.ifnames=0 biosdevname=0 no_timer_check /' /etc/default/grub
+        fi
+      fi
+  
+  - trigger: post-packages
+    types:
+      - vm
+    action: |-
+      #!/bin/sh
+      set -e
+      systemctl enable cloud-init-local.service cloud-init.service cloud-config.service cloud-final.service
+      systemctl enable qemu-guest-agent
+      truncate -s 0 /etc/machine-id
+      rm -f /var/lib/dbus/machine-id
+
+  - trigger: post-packages
+    types:
+      - vm
+    action: |-
+      #!/bin/sh
+      set -e
+      touch /etc/fstab
+      sed -i '/swap/d' /etc/fstab
+      systemctl mask swap.target
