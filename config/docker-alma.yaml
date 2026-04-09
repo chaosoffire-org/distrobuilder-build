@@ -1,0 +1,176 @@
+image:
+  distribution: 'almalinux'
+  release: 10
+  architecture: x86_64
+
+source:
+  downloader: almalinux-http
+  url: https://na.edge.kernel.org/almalinux
+  variant: boot
+  keyserver: hkp://keyserver.ubuntu.com
+  keys:
+    # Almalinux 8
+    - 0x2AE81E8ACED7258B
+    # Almalinux 9
+    - 0xD36CB86CB86B3716
+    # Almalinux 10
+    - 0xDEE5C11CC2A1E572
+
+targets:
+  lxc:
+    create_message: |
+      Docker LXC Container (AlmaLinux {{ image.release }})
+      Pre-installed: Docker CE, Containerd, Docker Compose
+      Type: LXC Container
+
+      * Note: Requires "nesting=1" for Docker in LXC
+      * Note: Set "swap=0" recommended
+
+files:
+  - path: /etc/dnf/dnf.conf
+    generator: dump
+    content: |
+      [main]
+      gpgcheck=1
+      installonly_limit=3
+      clean_requirements_on_remove=True
+      best=True
+      skip_if_unavailable=False
+      fastestmirror=True
+      max_parallel_downloads=10
+
+  - path: /root/.zshrc
+    generator: dump
+    mode: 0644
+    content: |
+      export ZSH="/root/.oh-my-zsh"
+      ZSH_THEME="robbyrussell"
+      plugins=(git docker systemd zsh-autosuggestions zsh-syntax-highlighting)
+      source $ZSH/oh-my-zsh.sh
+      export LANG=en_US.UTF-8
+      alias ll='ls -lah --color=auto'
+      alias grep='grep --color=auto'
+      alias vi='vim'
+      source <(docker completion zsh)
+
+  - path: /etc/systemd/system/docker-compose@.service
+    generator: dump
+    mode: 0644
+    content: |
+      [Unit]
+      Description=Docker Compose Service (Instance: %I)
+      After=docker.service
+      Requires=docker.service
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/usr/bin/docker compose -f /etc/docker/%I.yaml up -d
+      ExecStop=/usr/bin/docker compose -f /etc/docker/%I.yaml down
+
+      [Install]
+      WantedBy=multi-user.target
+
+packages:
+  manager: dnf
+  update: true
+  cleanup: true
+  sets:
+    - packages:
+        - epel-release
+        - iproute
+        - iputils
+        - procps-ng
+        - sudo
+        - curl
+        - wget
+        - tar
+        - vim
+        - bash-completion
+        - findutils
+        - NetworkManager
+        - openssh-server
+        - git
+        - zsh
+      action: install
+
+actions:
+  # 1. PRE-PACKAGE REPO SETUP (runs after unpack, BEFORE packages)
+  - trigger: post-unpack
+    action: |-
+      #!/bin/sh
+      set -e
+
+      echo ">>> Configuring Repositories..."
+
+      # Docker CE Repo
+      cat <<EOF > /etc/yum.repos.d/docker-ce.repo
+      [docker-ce-stable]
+      name=Docker CE Stable - \$basearch
+      baseurl=https://download.docker.com/linux/rhel/{{ image.release }}/x86_64/stable
+      enabled=1
+      gpgcheck=1
+      gpgkey=https://download.docker.com/linux/rhel/gpg
+      EOF
+
+  # 2. Install Docker packages (Post-packages)
+  - trigger: post-packages
+    action: |-
+      #!/bin/sh
+      set -e
+
+      echo ">>> Installing Docker CE and Containerd..."
+
+      dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+  # 3. Configure System (Post-packages)
+  - trigger: post-packages
+    action: |-
+      #!/bin/sh
+      set -e
+
+      ln -sf /usr/share/zoneinfo/Etc/GMT-8 /etc/localtime
+
+      # Configure Containerd
+      mkdir -p /etc/docker
+      mkdir -p /etc/containerd
+      containerd config default > /etc/containerd/config.toml
+      sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
+
+      # Enable Services
+      systemctl enable containerd
+      systemctl enable docker
+      systemctl enable NetworkManager
+      systemctl enable sshd
+
+  - trigger: post-packages
+    action: |-
+      #!/bin/sh
+      set -e
+      echo ">>> Installing Oh-My-Zsh & Plugins..."
+
+      if [ ! -d "/root/.oh-my-zsh" ]; then
+        git clone https://github.com/ohmyzsh/ohmyzsh.git /root/.oh-my-zsh
+      fi
+
+      PLUGIN_DIR="/root/.oh-my-zsh/custom/plugins"
+      if [ ! -d "$PLUGIN_DIR/zsh-autosuggestions" ]; then
+        git clone https://github.com/zsh-users/zsh-autosuggestions $PLUGIN_DIR/zsh-autosuggestions
+      fi
+
+      if [ ! -d "$PLUGIN_DIR/zsh-syntax-highlighting" ]; then
+        git clone https://github.com/zsh-users/zsh-syntax-highlighting.git $PLUGIN_DIR/zsh-syntax-highlighting
+      fi
+
+      usermod --shell /bin/zsh root
+
+  - trigger: post-packages
+    action: |-
+      #!/bin/sh
+      set -e
+      echo ">>> Cleaning up..."
+
+      dnf clean all
+      rm -rf /var/cache/dnf/*
+      rm -rf /var/cache/yum/*
+      rm -rf /tmp/*
