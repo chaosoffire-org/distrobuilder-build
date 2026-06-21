@@ -1,0 +1,856 @@
+image:
+  distribution: debian
+  release: trixie
+  architecture: x86_64
+
+mappings:
+  architecture_map: debian
+
+source:
+  downloader: debootstrap
+  url: http://deb.debian.org/debian
+  keyserver: keyserver.ubuntu.com
+  keys:
+    - 0x225629DF75B188BD
+    - 0x9904613D4CCE68C6
+  variant: minbase
+
+targets:
+  lxc:
+    create_message: |
+      Development Environment (Debian {{ image.release }})
+      Pre-installed:
+        Docker CE, Go, Rust (+cargo), Zig stable (+zig cc/c++ cross-compiler),
+        fnm (Fast Node Manager — run `fnm install --lts` on first login),
+        Bun, Python 3 + uv, just,
+        Java (Azul Zulu JDK 17/21/25 — default 25), Kotlin,
+        clang/llvm + GCC + musl-tools, Oh-My-Zsh
+        DX tools: direnv, zoxide, fzf, ripgrep, fd, bat, eza,
+                  neovim, tmux (configured), git-delta, lazygit, lazydocker,
+                  shellcheck, shfmt, gh
+      Login: root (no password) | chaos (password: chaos, sudo NOPASSWD)
+      Type: LXC Container
+
+      * Note: Requires "nesting=1" for Docker in LXC
+      * Note: Set "swap=0" recommended
+      * Note: Switch Java via: update-alternatives --config java
+      * Note: Node.js is NOT pre-installed — use fnm:
+          fnm install --lts    # install latest LTS
+          fnm default lts-latest
+  incus:
+    vm:
+      size: 53687091200
+      filesystem: ext4
+
+files:
+  - path: /etc/apt/apt.conf.d/99-distrobuilder
+    generator: dump
+    content: |
+      Acquire::Languages "none";
+      APT::Install-Recommends "false";
+      APT::Install-Suggests "false";
+      Acquire::Retries "3";
+      Acquire::Parallel "10";
+
+  - path: /etc/systemd/networkd.conf
+    generator: dump
+    content: |
+      [Network]
+      # keep classic kernel interface names (eth0, wlan0)
+      NamePolicy=kernel
+
+  - path: /etc/locale.gen
+    generator: dump
+    content: |
+      en_US.UTF-8 UTF-8
+      zh_TW.UTF-8 UTF-8
+
+  - path: /root/.zshrc
+    generator: dump
+    mode: 0644
+    content: |
+      export ZSH="/root/.oh-my-zsh"
+      ZSH_THEME="robbyrussell"
+      plugins=(git docker systemd zsh-autosuggestions zsh-syntax-highlighting)
+      source $ZSH/oh-my-zsh.sh
+      export LANG=en_US.UTF-8
+      export EDITOR=nvim
+      alias ll='ls -lah --color=auto'
+      alias grep='grep --color=auto'
+      alias vi='nvim'
+      alias vim='nvim'
+      alias dps='docker ps -a --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"'
+      alias dlog='docker logs -f'
+
+      # Zig cross-compiler shortcuts (zig cc / zig c++ as drop-in C/C++ compiler)
+      alias zigcc='zig cc'
+      alias zigcxx='zig c++'
+      alias zigwin='zig cc -target x86_64-windows-gnu'
+      alias zigdarwin='zig cc -target aarch64-macos'
+      alias zigdarwinx86='zig cc -target x86_64-macos'
+      alias zigmac='zig cc -target aarch64-macos'
+      alias zigmacx86='zig cc -target x86_64-macos'
+
+      # Go CGO cross-compile helpers — uses zig cc as the C cross-compiler.
+      # Usage:  go-cgo-windows-amd64 build ./...
+      #         go-cgo-darwin-arm64 build -o app ./...
+      #         go-cgo-linux-musl-amd64 build ./...
+      # Sets CC, GOOS, GOARCH, CGO_ENABLED=1, then restores env.
+      __go_cgo() {
+        local _cc="$1" _goos="$2" _goarch="$3" _ldflags="$4"; shift 4
+        env CGO_ENABLED=1 CC="$_cc" GOOS="$_goos" GOARCH="$_goarch" CGO_LDFLAGS="$_ldflags" go "$@"
+      }
+      go-cgo-windows-amd64()  { __go_cgo 'zig cc -target x86_64-windows-gnu'   windows amd64 "-lwldap32 -lntdll" "$@"; }
+      go-cgo-darwin-arm64()   { __go_cgo 'zig cc -target aarch64-macos'        darwin  arm64 "" "$@"; }
+      go-cgo-darwin-amd64()   { __go_cgo 'zig cc -target x86_64-macos'         darwin  amd64 "" "$@"; }
+      go-cgo-linux-gnu-amd64()  { __go_cgo 'zig cc -target x86_64-linux-gnu'   linux   amd64 "" "$@"; }
+      go-cgo-linux-gnu-arm64()  { __go_cgo 'zig cc -target aarch64-linux-gnu'  linux   arm64 "" "$@"; }
+      go-cgo-linux-musl-amd64() { __go_cgo 'zig cc -target x86_64-linux-musl'  linux   amd64 "" "$@"; }
+      go-cgo-linux-musl-arm64() { __go_cgo 'zig cc -target aarch64-linux-musl' linux   arm64 "" "$@"; }
+
+      # Java / Kotlin — default JDK 25; switch via update-alternatives --config java
+      export JAVA_HOME=/usr/lib/jvm/zulu25
+      export PATH="$JAVA_HOME/bin:/opt/kotlin/bin:$PATH"
+
+      # Rust env (rustup installed at $HOME/.cargo)
+      . "$HOME/.cargo/env" 2>/dev/null || true
+
+      # Go
+      export PATH="$PATH:/usr/local/go/bin:$HOME/go/bin"
+
+      # Zig (stable release at /opt/zig)
+      export PATH="$PATH:/opt/zig"
+
+      # fnm (Fast Node Manager) — Rust binary, ~1ms shell startup.
+      # No node version is pre-installed; run `fnm install --lts` on first login.
+      # Reads .nvmrc / .node-version automatically via --use-on-cd.
+      eval "$(fnm env --shell zsh --use-on-cd --version-file-strategy recursive 2>/dev/null)" || true
+      export PATH="$PATH:$HOME/.bun/bin"
+
+      # uv (Python package manager) — installed at $HOME/.local/bin
+      export PATH="$HOME/.local/bin:$PATH"
+
+      # Modern path-jumper (replaces cd for frequent dirs)
+      eval "$(zoxide init zsh)" 2>/dev/null || true
+
+      # fzf keybindings (Ctrl-R history, Ctrl-T file, Alt-C cd) + completion
+      source /usr/share/doc/fzf/examples/key-bindings.zsh 2>/dev/null
+      source /usr/share/doc/fzf/examples/completion.zsh 2>/dev/null
+
+      # direnv (auto-load .envrc)
+      eval "$(direnv hook zsh)" 2>/dev/null || true
+
+      # Aliases for Debian-renamed binaries (fd-find → fd, bat → batcat)
+      # Real symlinks are created in action 6b; aliases are belt-and-suspenders fallback.
+      command -v fd      >/dev/null 2>&1 || alias fd='fdfind'
+      command -v bat     >/dev/null 2>&1 || alias bat='batcat'
+      command -v lazygit >/dev/null 2>&1 && alias lg='lazygit'
+      command -v lazydocker >/dev/null 2>&1 && alias lzd='lazydocker'
+
+  - path: /etc/systemd/system/docker-compose@.service
+    generator: dump
+    mode: 0644
+    content: |
+      [Unit]
+      Description=Docker Compose Service (Instance: %I)
+      After=docker.service
+      Requires=docker.service
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/usr/bin/docker compose -f /etc/docker/%I.yaml up -d
+      ExecStop=/usr/bin/docker compose -f /etc/docker/%I.yaml down
+
+      [Install]
+      WantedBy=multi-user.target
+
+  - path: /etc/sysctl.d/99-dev.conf
+    generator: dump
+    content: |
+      net.ipv4.ip_forward = 1
+      net.ipv6.conf.all.forwarding = 1
+      fs.inotify.max_user_watches = 524288
+      fs.inotify.max_user_instances = 512
+      vm.max_map_count = 262144
+
+  - path: /etc/profile.d/dev-env.sh
+    generator: dump
+    mode: 0644
+    content: |
+      export LANG=en_US.UTF-8
+      export EDITOR=nvim
+      export JAVA_HOME=/usr/lib/jvm/zulu25
+      export PATH="$JAVA_HOME/bin:/opt/kotlin/bin:$PATH:/usr/local/go/bin:$HOME/go/bin:$HOME/.local/bin:$HOME/.cargo/bin:/opt/zig:$HOME/.bun/bin:/usr/local/bin"
+
+  - path: /etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf
+    types:
+      - vm
+    generator: dump
+    content: |
+      [Service]
+      ExecStart=
+      ExecStart=-/sbin/agetty --autologin root --noclear %I 115200 linux
+
+  - path: /root/.tmux.conf
+    generator: dump
+    mode: 0644
+    content: |
+      # --- UI ---
+      set  -g default-terminal "tmux-256color"
+      set  -ag terminal-overrides ",xterm-256color:RGB"
+      set  -g mouse on
+      set  -g history-limit 50000
+      set  -g base-index 1
+      set  -g pane-base-index 1
+      set  -g renumber-windows on
+      set  -g escape-time 10
+      set  -g status-interval 5
+      set  -g status-style "bg=default,fg=default"
+      set  -g status-left  " #[fg=blue]#S "
+      set  -g status-right "#[fg=cyan]%Y-%m-%d %H:%M "
+      set  -g window-status-current-style "fg=black,bg=cyan"
+      setw -g mode-keys vi
+
+      # --- Keybinds (vi-style) ---
+      unbind C-b
+      set  -g prefix C-a
+      bind C-a send-prefix
+      bind r source-file ~/.tmux.conf \; display "tmux reloaded"
+      bind | split-window -h -c "#{pane_current_path}"
+      bind - split-window -v -c "#{pane_current_path}"
+      bind h select-pane -L
+      bind j select-pane -D
+      bind k select-pane -U
+      bind l select-pane -R
+      bind -r H resize-pane -L 5
+      bind -r J resize-pane -D 5
+      bind -r K resize-pane -U 5
+      bind -r L resize-pane -R 5
+
+  - path: /etc/gitconfig
+    generator: dump
+    mode: 0644
+    content: |
+      [init]
+          defaultBranch = main
+      [pull]
+          rebase = true
+      [push]
+          default = current
+          autoSetupRemote = true
+      [core]
+          pager = delta
+      [interactive]
+          diffFilter = delta --color-only
+      [delta]
+          navigate = true
+          side-by-side = true
+          line-numbers = true
+          syntax-theme = Dracula
+      [merge]
+          conflictstyle = zdiff3
+      [diff]
+          colorMoved = default
+
+  - path: /etc/skills/dev-environment/SKILL.md
+    generator: dump
+    mode: 0644
+    content: |
+      ---
+      name: dev-environment
+      description: Quick overview of what's built into this development system. Load this skill when you need to know what tools are available in this enviroment.
+      ---
+
+      # dev-environment Overview
+
+      ## Languages
+      C/C++ (gcc, clang), Go, Rust, Zig, Python 3, Java (Zulu), Kotlin, Bun.
+      Node.js managed via `fnm`.
+
+      ## Cross-Compilation
+      - **Go CGO**: shell helpers `go-cgo-<os>-<arch>` in `~/.zshrc` (uses zig cc)
+      - **Rust**: `cargo zigbuild` / `cross` (targets pre-added)
+      - **C/C++**: `zig cc -target <triple>` (aliases: `zigwin`, `zigdarwin`, `zigdarwinx86`)
+
+      ## LSP Servers
+      clangd, gopls, rust-analyzer.
+
+      ## Shell
+      zsh + oh-my-zsh. Notable aliases: `vi`/`vim`→nvim, `lg`→lazygit, `lzd`→lazydocker.
+      Tools: zoxide (`z`), fzf, direnv, `fd`, `bat`, `rg`.
+
+      ## Docker
+      Docker CE + compose plugin. Use `docker compose` (not `docker-compose`).
+
+      ## Python
+      Use `uv` (not pip) for venv and package management.
+
+      ## DX Tools
+      git (with `delta` pager), lazygit, lazydocker, tmux, gh, just, shellcheck, shfmt.
+
+packages:
+  manager: apt
+  update: true
+  cleanup: true
+  sets:
+    - packages:
+        - systemd-sysv
+        - dbus
+        - openssh-server
+        - sudo
+        - ca-certificates
+        - curl
+        - wget
+        - gnupg
+        - lsb-release
+        - procps
+        - iproute2
+        - iputils-ping
+        - iputils-tracepath
+        - dnsutils
+        - less
+        - vim
+        - bash-completion
+        - zsh
+        - git
+        - jq
+        - tmux
+        - htop
+        - btop
+        - tree
+        - unzip
+        - xz-utils
+        - file
+        - rsync
+        - locales
+        - tzdata
+        - man-db
+      action: install
+
+    - packages:
+        - build-essential
+        - make
+        - m4
+        - pkg-config
+        - cmake
+        - ninja-build
+        - autoconf
+        - automake
+        - libtool
+        - flex
+        - bison
+        - ccache
+        - strace
+        - ltrace
+        - gdb
+        - valgrind
+        - clang
+        - clang-tools
+        - clangd
+        - lld
+        - lldb
+        - llvm
+        - libc++-dev
+        - libc++abi-dev
+        - musl-tools
+        - libssl-dev
+        - libcurl4-openssl-dev
+        - libz-dev
+        - libbz2-dev
+        - liblzma-dev
+        - libsqlite3-dev
+        - libxml2-dev
+        - libxslt1-dev
+        - libffi-dev
+        - libreadline-dev
+        - libpcre2-dev
+        - libgit2-dev
+        - perl
+      action: install
+
+    - packages:
+        - python3
+        - python3-pip
+        - python3-venv
+        - python3-dev
+        - python3-full
+        - pipx
+      action: install
+
+    - packages:
+        - ripgrep
+        - fd-find
+        - fzf
+        - bat
+        - eza
+        - ncdu
+        - duf
+        - socat
+        - netcat-openbsd
+        - tcpdump
+        - nmap
+        - httpie
+        - shellcheck
+        - shfmt
+        - parallel
+        - direnv
+        - zoxide
+        - neovim
+        - git-delta
+      action: install
+
+    - packages:
+        - linux-image-amd64
+        - linux-headers-amd64
+        - grub-pc
+        - grub-efi-amd64-bin
+        - shim-signed
+        - cloud-init
+        - acpid
+        - qemu-guest-agent
+        - firmware-linux
+      action: install
+      types:
+        - vm
+
+actions:
+  - trigger: post-unpack
+    pongo: true
+    action: |-
+      #!/bin/sh
+      set -e
+      echo ">>> Configuring third-party repositories..."
+
+      # Bootstrap curl + gnupg (not in minbase, needed for repo setup)
+      apt-get update -qq
+      apt-get install -y -qq curl gnupg
+
+      # 1.1 Docker CE repo (Debian trixie = codename 'trixie')
+      install -d -m 0755 /etc/apt/keyrings
+      curl -fsSL https://download.docker.com/linux/debian/gpg \
+        | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+      chmod a+r /etc/apt/keyrings/docker.gpg
+      cat <<EOF > /etc/apt/sources.list.d/docker.list
+      deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian {{ image.release }} stable
+      EOF
+
+      # 1.2 GitHub CLI repo
+      curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        | gpg --dearmor -o /etc/apt/keyrings/githubcli-archive-keyring.gpg
+      chmod a+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
+      cat <<EOF > /etc/apt/sources.list.d/github-cli.list
+      deb [arch=amd64 signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main
+      EOF
+
+      # Note: Node.js is intentionally NOT installed via apt — fnm (Fast Node
+      # Manager) is installed system-wide; user runs `fnm install --lts` to
+      # get node. This avoids nvm's ~100ms shell-startup tax.
+
+      # 1.3 Azul Zulu JDK repo (uses literal 'stable' as dist, NOT Debian codename)
+      curl -fsSL https://repos.azul.com/azul-repo.key \
+        | gpg --dearmor -o /etc/apt/keyrings/azul.gpg
+      chmod a+r /etc/apt/keyrings/azul.gpg
+      cat <<EOF > /etc/apt/sources.list.d/zulu.list
+      deb [signed-by=/etc/apt/keyrings/azul.gpg] https://repos.azul.com/zulu/deb stable main
+      EOF
+
+  - trigger: post-packages
+    action: |-
+      #!/bin/sh
+      set -e
+      echo ">>> Installing Docker CE, GitHub CLI, Azul Zulu JDK 17/21/25..."
+      apt-get update
+      apt-get install -y \
+        docker-ce \
+        docker-ce-cli \
+        containerd.io \
+        docker-buildx-plugin \
+        docker-compose-plugin \
+        gh \
+        zulu17-jdk \
+        zulu21-jdk \
+        zulu25-jdk
+
+      # Set JDK 25 as system default via update-alternatives (packages self-register)
+      update-alternatives --set java  /usr/lib/jvm/zulu25/bin/java  || true
+      update-alternatives --set javac /usr/lib/jvm/zulu25/bin/javac || true
+
+  - trigger: post-packages
+    action: |-
+      #!/bin/sh
+      set -e
+      echo ">>> Installing language toolchains..."
+
+      # --- Go: upstream tarball (newer than Debian's) ---
+      GO_LATEST=$(curl -fsSL 'https://go.dev/VERSION?m=text' | head -n1)
+      echo ">>> Latest Go: $GO_LATEST"
+      curl -fsSL "https://go.dev/dl/${GO_LATEST}.linux-amd64.tar.gz" -o /tmp/go.tgz
+      rm -rf /usr/local/go
+      tar -C /usr/local -xzf /tmp/go.tgz
+      rm -f /tmp/go.tgz
+
+      # --- Rust via rustup (stable, default profile, no modify-path prompt) ---
+      curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs -o /tmp/rustup-init.sh
+      sh /tmp/rustup-init.sh -y --default-toolchain stable --profile default --no-modify-path
+      rm -f /tmp/rustup-init.sh
+
+      # --- Zig (latest stable release, provides `zig`, `zig cc`, `zig c++`) ---
+      # zig cc acts as a drop-in C/C++ cross-compiler for many targets:
+      #   x86_64-windows-gnu, x86_64-macos, aarch64-macos, x86_64-linux-gnu, ...
+      # Stable is preferred over master for dev-machine predictability.
+      ZIG_LATEST=$(curl -fsSL --retry 3 --retry-delay 5 'https://ziglang.org/download/index.json' \
+        | python3 -c "
+      import sys, json
+      d = json.load(sys.stdin)
+      ks = [k for k in d.keys() if k != 'master']
+      def ver(k):
+          try: return tuple(int(x) for x in k.split('.'))
+          except: return (0,)
+      ks.sort(key=ver, reverse=True)
+      print(ks[0] if ks else '')
+      " | head -n1)
+      echo ">>> Latest Zig (stable): $ZIG_LATEST"
+      curl -fsSL --retry 3 --retry-delay 5 "https://ziglang.org/download/${ZIG_LATEST}/zig-x86_64-linux-${ZIG_LATEST}.tar.xz" -o /tmp/zig.tar.xz
+      rm -rf /opt/zig
+      mkdir -p /opt/zig
+      tar -xf /tmp/zig.tar.xz --strip-components=1 -C /opt/zig
+      rm -f /tmp/zig.tar.xz
+      ln -sf /opt/zig/zig /usr/local/bin/zig
+
+      # --- fnm (Fast Node Manager, Rust binary) — NO node pre-installed ---
+      # User runs `fnm install --lts` on first login. fnm is ~1ms shell startup
+      # vs nvm's ~100ms. Reads .nvmrc / .node-version / package.json#volta automatically.
+      FNM_VERSION=$(curl -fsSL --retry 3 --retry-delay 5 'https://api.github.com/repos/Schniz/fnm/releases/latest' \
+        | python3 -c "import sys,json; r=json.load(sys.stdin); print(r['tag_name'])")
+      FNM_VERSION="${FNM_VERSION#v}"
+      echo ">>> Latest fnm: $FNM_VERSION"
+      curl -fsSL "https://github.com/Schniz/fnm/releases/download/v${FNM_VERSION}/fnm-linux.zip" -o /tmp/fnm.zip
+      install -d /usr/local/bin
+      unzip -p /tmp/fnm.zip fnm > /usr/local/bin/fnm
+      chmod +x /usr/local/bin/fnm
+      rm -f /tmp/fnm.zip
+
+      # --- Bun (javascript runtime & package manager) ---
+      curl -fsSL https://bun.sh/install | bash
+      # Bun installs to $HOME/.bun
+
+      # --- just (command runner, Makefile alternative) via cargo ---
+      # Rust/Cargo is already installed above; just is a pure Rust crate.
+      . "$HOME/.cargo/env"
+      cargo install just
+
+      # --- Kotlin compiler (JetBrains GitHub releases, non-interactive) ---
+      # Debian trixie's apt kotlin is frozen at 1.3.31 (too old); use official release.
+      KOTLIN_VERSION=$(curl -fsSL --retry 3 --retry-delay 5 'https://api.github.com/repos/JetBrains/kotlin/releases/latest' \
+        | python3 -c "import sys,json; r=json.load(sys.stdin); print(r['tag_name'])")
+      # tag_name includes leading 'v'
+      KOTLIN_VERSION="${KOTLIN_VERSION#v}"
+      echo ">>> Latest Kotlin: $KOTLIN_VERSION"
+      curl -fsSL -o "/tmp/kotlin-compiler-${KOTLIN_VERSION}.zip" \
+        "https://github.com/JetBrains/kotlin/releases/download/v${KOTLIN_VERSION}/kotlin-compiler-${KOTLIN_VERSION}.zip"
+      unzip -q "/tmp/kotlin-compiler-${KOTLIN_VERSION}.zip" -d /opt
+      ln -sfn /opt/kotlinc /opt/kotlin
+      for b in kotlinc kotlinc-jvm kotlin kotlinc-js; do
+        [ -x "/opt/kotlin/bin/${b}" ] && ln -sf "/opt/kotlin/bin/${b}" "/usr/local/bin/${b}"
+      done
+      rm -f "/tmp/kotlin-compiler-${KOTLIN_VERSION}.zip"
+
+      # --- uv (Python package + project manager, Rust-based, by Astral) ---
+      curl -LsSf https://astral.sh/uv/install.sh | sh
+      # Installs to $HOME/.local/bin
+
+      echo ">>> All language toolchains installed."
+
+  - trigger: post-packages
+    action: |-
+      #!/bin/sh
+      set -e
+      echo ">>> Configuring locale, timezone, services..."
+
+      # Locale — re-write locale.gen (locales package may have overwritten the dumped file)
+      cat > /etc/locale.gen <<'EOF'
+      en_US.UTF-8 UTF-8
+      zh_TW.UTF-8 UTF-8
+      EOF
+      locale-gen
+      update-locale LANG=en_US.UTF-8
+
+      # Timezone (GMT-8 pattern used by sibling configs)
+      ln -sf /usr/share/zoneinfo/Etc/GMT-8 /etc/localtime
+      echo "Etc/GMT-8" > /etc/timezone
+
+      # Docker daemon: enable systemd cgroup driver
+      mkdir -p /etc/docker /etc/containerd
+      cat <<EOF > /etc/docker/daemon.json
+      {
+        "log-driver": "journald",
+        "storage-driver": "overlay2",
+        "userland-proxy": false,
+        "default-runtime": "runc",
+        "runtimes": {
+          "runc": { "path": "runc" }
+        }
+      }
+      EOF
+      containerd config default > /etc/containerd/config.toml
+      sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
+
+      # Enable services (create symlinks manually — systemctl doesn't work in chroot)
+      mkdir -p /etc/systemd/system/multi-user.target.wants
+      ln -sf /lib/systemd/system/containerd.service /etc/systemd/system/multi-user.target.wants/containerd.service
+      ln -sf /lib/systemd/system/docker.service /etc/systemd/system/multi-user.target.wants/docker.service
+      ln -sf /lib/systemd/system/ssh.service /etc/systemd/system/multi-user.target.wants/ssh.service 2>/dev/null || \
+      ln -sf /lib/systemd/system/sshd.service /etc/systemd/system/multi-user.target.wants/sshd.service 2>/dev/null || true
+
+  - trigger: post-packages
+    action: |-
+      #!/bin/sh
+      set -e
+      echo ">>> Installing Oh-My-Zsh & plugins..."
+
+      if [ ! -d "/root/.oh-my-zsh" ]; then
+        git clone https://github.com/ohmyzsh/ohmyzsh.git /root/.oh-my-zsh
+      fi
+
+      PLUGIN_DIR="/root/.oh-my-zsh/custom/plugins"
+      mkdir -p "$PLUGIN_DIR"
+      if [ ! -d "$PLUGIN_DIR/zsh-autosuggestions" ]; then
+        git clone https://github.com/zsh-users/zsh-autosuggestions "$PLUGIN_DIR/zsh-autosuggestions"
+      fi
+      if [ ! -d "$PLUGIN_DIR/zsh-syntax-highlighting" ]; then
+        git clone https://github.com/zsh-users/zsh-syntax-highlighting.git "$PLUGIN_DIR/zsh-syntax-highlighting"
+      fi
+
+      # Switch root shell to zsh
+      chsh -s /usr/bin/zsh root
+
+  - trigger: post-files
+    action: |-
+      #!/bin/sh
+      set -e
+      echo ">>> Creating 'chaos' user with full sudo + per-user toolchains..."
+
+      # Create user 'chaos' with home, zsh shell, sudo + docker groups
+      useradd -m -s /usr/bin/zsh -G sudo,docker chaos
+      echo 'chaos:chaos' | chpasswd
+
+      # Full passwordless sudo for chaos
+      cat > /etc/sudoers.d/chaos <<'EOF'
+      chaos ALL=(ALL:ALL) NOPASSWD:ALL
+      EOF
+      chmod 0440 /etc/sudoers.d/chaos
+
+      # --- Copy root's zsh + tmux environment to chaos ---
+      cp -a /root/.zshrc /home/chaos/.zshrc
+      # Fix ZSH path for chaos's home
+      sed -i 's|export ZSH="/root/.oh-my-zsh"|export ZSH="/home/chaos/.oh-my-zsh"|' /home/chaos/.zshrc
+      cp -a /root/.oh-my-zsh /home/chaos/.oh-my-zsh
+      cp -a /root/.tmux.conf /home/chaos/.tmux.conf 2>/dev/null || true
+      chown -R chaos:chaos /home/chaos/.zshrc /home/chaos/.oh-my-zsh /home/chaos/.tmux.conf
+
+      # --- Install per-user tools for chaos (this system is built FOR chaos) ---
+      # fnm is a system-wide binary (/usr/local/bin/fnm); node itself is NOT
+      # pre-installed — chaos runs `fnm install --lts` on first login.
+      # Bun is the only per-user JS tool pre-installed (no node dependency).
+
+      su - chaos -c '
+        set -e
+        export PATH="/usr/local/go/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+
+        # --- Bun ---
+        curl -fsSL https://bun.sh/install | bash
+
+        # --- Rust via rustup ---
+        curl --proto "=https" --tlsv1.2 -fsSL https://sh.rustup.rs -o /tmp/rustup-init.sh
+        sh /tmp/rustup-init.sh -y --default-toolchain stable --profile default --no-modify-path
+        rm -f /tmp/rustup-init.sh
+
+        # --- just via cargo (chaos'"'"'s own cargo) ---
+        . "$HOME/.cargo/env"
+        cargo install just
+
+        # --- Rust: cross-compile targets + rust-analyzer + cargo-zigbuild + cross ---
+        rustup target add \
+          x86_64-pc-windows-gnu \
+          x86_64-unknown-linux-musl \
+          aarch64-unknown-linux-musl \
+          x86_64-apple-darwin \
+          aarch64-apple-darwin \
+          wasm32-unknown-unknown
+        rustup component add rust-analyzer
+        cargo install cargo-zigbuild
+        cargo install cross
+
+        # --- Go: gopls (LSP) + dlv (debugger) + golangci-lint (linter) ---
+        go install golang.org/x/tools/gopls@latest
+        go install github.com/go-delve/delve/cmd/dlv@latest
+        go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+
+        # --- uv ---
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+      '
+
+      # Make chaos own all of its home contents
+      chown -R chaos:chaos /home/chaos
+
+      echo ">>> 'chaos' user ready (password: chaos, sudo: NOPASSWD, all toolchains pre-installed)"
+
+  - trigger: post-packages
+    action: |-
+      #!/bin/sh
+      set -e
+      echo ">>> Setting up docker group & completion..."
+      getent group docker >/dev/null 2>&1 || groupadd --system docker
+
+      # Ensure root completion dirs exist for zsh/bash completion
+      mkdir -p /etc/bash_completion.d /usr/local/share/zsh/site-functions
+
+      # Docker CLI completions (zsh + bash)
+      curl -fsSL https://raw.githubusercontent.com/docker/cli/master/contrib/completion/zsh/_docker \
+        -o /usr/local/share/zsh/site-functions/_docker 2>/dev/null || true
+      curl -fsSL https://raw.githubusercontent.com/docker/cli/master/contrib/completion/bash/docker \
+        -o /etc/bash_completion.d/docker 2>/dev/null || true
+      # GitHub CLI completions
+      gh completion -s zsh  > /usr/local/share/zsh/site-functions/_gh 2>/dev/null || true
+      gh completion -s bash > /etc/bash_completion.d/gh 2>/dev/null || true
+
+  - trigger: post-packages
+    action: |-
+      #!/bin/sh
+      set -e
+      echo ">>> Symlinking Debian-renamed binaries + installing lazygit/lazydocker..."
+
+      # --- fd-find → fd, bat → batcat (Debian naming conflict workaround) ---
+      [ -x "$(command -v fdfind)" ] && ln -sf "$(command -v fdfind)" /usr/local/bin/fd
+      [ -x "$(command -v batcat)" ] && ln -sf "$(command -v batcat)" /usr/local/bin/bat
+
+      # --- lazygit (TUI git client) from GitHub releases ---
+      LG_VERSION=$(curl -fsSL --retry 3 --retry-delay 5 'https://api.github.com/repos/jesseduffield/lazygit/releases/latest' \
+        | python3 -c "import sys,json; r=json.load(sys.stdin); print(r['tag_name'])")
+      LG_VERSION="${LG_VERSION#v}"
+      echo ">>> Latest lazygit: $LG_VERSION"
+      curl -fsSL "https://github.com/jesseduffield/lazygit/releases/download/v${LG_VERSION}/lazygit_${LG_VERSION}_linux_x86_64.tar.gz" \
+        -o /tmp/lazygit.tgz
+      tar -xzf /tmp/lazygit.tgz -C /tmp lazygit
+      install -m 0755 /tmp/lazygit /usr/local/bin/lazygit
+      rm -f /tmp/lazygit.tgz /tmp/lazygit
+      # Completion (zsh)
+      curl -fsSL "https://raw.githubusercontent.com/jesseduffield/lazygit/master/scripts/complete/lazygit.zsh" \
+        -o /usr/local/share/zsh/site-functions/_lazygit 2>/dev/null || true
+
+      # --- lazydocker (TUI docker client) from GitHub releases ---
+      LD_VERSION=$(curl -fsSL --retry 3 --retry-delay 5 'https://api.github.com/repos/jesseduffield/lazydocker/releases/latest' \
+        | python3 -c "import sys,json; r=json.load(sys.stdin); print(r['tag_name'])")
+      LD_VERSION="${LD_VERSION#v}"
+      echo ">>> Latest lazydocker: $LD_VERSION"
+      curl -fsSL "https://github.com/jesseduffield/lazydocker/releases/download/v${LD_VERSION}/lazydocker_${LD_VERSION}_Linux_x86_64.tar.gz" \
+        -o /tmp/lazydocker.tgz
+      tar -xzf /tmp/lazydocker.tgz -C /tmp lazydocker
+      install -m 0755 /tmp/lazydocker /usr/local/bin/lazydocker
+      rm -f /tmp/lazydocker.tgz /tmp/lazydocker
+      # Completion (zsh)
+      curl -fsSL "https://raw.githubusercontent.com/jesseduffield/lazydocker/master/scripts/complete/lazydocker.zsh" \
+        -o /usr/local/share/zsh/site-functions/_lazydocker 2>/dev/null || true
+
+  - trigger: post-files
+    action: |-
+      #!/bin/sh
+      set -e
+      echo ">>> Setting up Neovim (kickstart.nvim) for root + chaos..."
+
+      setup_kickstart() {
+        local HOME_DIR="$1"
+        local USER_NAME="$2"
+
+        # kickstart.nvim — single-file, fully-featured nvim config
+        # Ships: LSP (auto-detect installed servers), completion (nvim-cmp),
+        # telescope (fuzzy finder), treesitter, autopairs, fugitive, gitsigns
+        mkdir -p "$HOME_DIR/.config/nvim"
+        curl -fsSL "https://raw.githubusercontent.com/nvim-lua/kickstart.nvim/master/init.lua" \
+          -o "$HOME_DIR/.config/nvim/init.lua"
+
+        # Pre-install packer.nvim (plugin manager kickstart bootstraps on first run,
+        # but pre-install avoids the first-launch bootstrap delay)
+        PACKER_DIR="$HOME_DIR/.local/share/nvim/site/pack/packer/start/packer.nvim"
+        if [ ! -d "$PACKER_DIR" ]; then
+          git clone --depth 1 https://github.com/wbthomason/packer.nvim "$PACKER_DIR"
+        fi
+
+        chown -R "$USER_NAME:$USER_NAME" "$HOME_DIR/.config/nvim" "$HOME_DIR/.local/share/nvim"
+      }
+
+      setup_kickstart "/root" "root"
+      setup_kickstart "/home/chaos" "chaos"
+
+  - trigger: post-files
+    action: |-
+      #!/bin/sh
+      set -e
+      echo ">>> Symlinking dev-environment SKILL into user skill dirs..."
+
+      # Canonical SKILL.md lives at /etc/skills/dev-environment/ (dumped by files:).
+      # Folder-symlink it into every AI agent skill discovery path for root + chaos
+      # so any agent (claude, opencode, etc.) finds it without duplicating bytes.
+      link_skills() {
+        local HOME_DIR="$1" USER_NAME="$2"
+        local SKILL_SRC="/etc/skills/dev-environment"
+
+        for AGENT_DIR in ".claude/skills" ".agents/skills"; do
+          local TARGET="$HOME_DIR/$AGENT_DIR/dev-environment"
+          mkdir -p "$HOME_DIR/$AGENT_DIR"
+          rm -rf "$TARGET"
+          ln -s "$SKILL_SRC" "$TARGET"
+          chown -h "$USER_NAME:$USER_NAME" "$TARGET"
+          chown -R "$USER_NAME:$USER_NAME" "$HOME_DIR/$AGENT_DIR"
+        done
+      }
+
+      link_skills "/root" "root"
+      link_skills "/home/chaos" "chaos"
+
+  - trigger: post-packages
+    types:
+      - vm
+    action: |-
+      #!/bin/sh
+      set -e
+      echo ">>> Configuring VM serial console + cloud-init..."
+
+      systemctl enable serial-getty@ttyS0.service
+      systemctl enable acpid
+      systemctl enable qemu-guest-agent
+      systemctl enable cloud-init-local.service cloud-init.service cloud-config.service cloud-final.service
+
+      # Kernel cmdline for xterm.js (matches k8s-alma pattern)
+      if [ -f /etc/default/grub ]; then
+        sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT="quiet console=tty0 console=ttyS0,115200 net.ifnames=0 biosdevname=0 no_timer_check"/' /etc/default/grub
+        if ! grep -q "console=ttyS0" /etc/default/grub; then
+          sed -i 's/GRUB_CMDLINE_LINUX="/GRUB_CMDLINE_LINUX="console=tty0 console=ttyS0,115200 net.ifnames=0 biosdevname=0 no_timer_check /' /etc/default/grub
+        fi
+        update-grub || grub-mkconfig -o /boot/grub/grub.cfg
+      fi
+
+      # Fresh machine-id so clones are unique
+      truncate -s 0 /etc/machine-id
+      rm -f /var/lib/dbus/machine-id
+
+      # Mask swap
+      sed -i '/swap/d' /etc/fstab || true
+      systemctl mask swap.target
+
+  - trigger: post-packages
+    action: |-
+      #!/bin/sh
+      set -e
+      echo ">>> Final cleanup..."
+      apt-get clean
+      rm -rf /var/lib/apt/lists/*
+      rm -rf /var/cache/apt/archives/*.deb
+      rm -rf /var/cache/apt/archives/partial/*
+      rm -rf /tmp/* /var/tmp/*
+
+      # Truncate logs to keep image small
+      find /var/log -type f -exec truncate -s 0 {} \; 2>/dev/null || true
+
+      echo ">>> Build Complete!"
