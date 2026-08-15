@@ -409,7 +409,6 @@ packages:
         - cloud-init
         - acpid
         - qemu-guest-agent
-        - firmware-linux
       action: install
       types:
         - vm
