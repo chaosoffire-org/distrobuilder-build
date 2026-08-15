@@ -1,0 +1,190 @@
+image:
+  distribution: "alpinelinux"
+  release: 3.23
+  architecture: x86_64
+
+source:
+  downloader: alpinelinux-http
+  url: https://na.edge.kernel.org/alpine
+  keyserver: hkp://keyserver.ubuntu.com
+  keys:
+    # Alpine Linux Universal Key
+    # https://alpinelinux.org/keys/ncopa.asc
+    - 0x293ACD0907D9495A
+
+targets:
+  lxc:
+    create_message: |
+      EasyTier Mesh VPN LXC (Alpine)
+      ==============================
+      easytier-core auto-starts with listeners:
+        tcp://0.0.0.0:11010  udp://0.0.0.0:11010  ws://0.0.0.0:11011
+
+      Adjust behavior:  vi /etc/conf.d/easytier  (EASYTIER_FLAGS)
+      Apply changes:    rc-service easytier restart
+      Inspect runtime:  easytier-cli node info
+                        easytier-cli node config
+
+      Update binaries (override, no rebuild):
+        easytier:  download easytier-linux-x86_64-vX.Y.Z.zip, extract,
+                   install -m 0755 easytier-core easytier-cli /usr/local/bin/
+                   rc-service easytier restart
+        cloudflared:  wget cloudflared-linux-amd64 -O /usr/local/bin/cloudflared
+                   chmod 0755 /usr/local/bin/cloudflared
+                   rc-service cloudflared restart
+
+      Cloudflare Tunnel (exposes ws://0.0.0.0:11011 via Cloudflare):
+        1. Zero Trust Dashboard -> Networks -> Tunnels -> Create a tunnel
+        2. Add a Public Hostname, service = http://localhost:11011
+           (cloudflared performs the WebSocket upgrade automatically)
+        3. Copy the tunnel token, then inside this container:
+             vi /etc/conf.d/cloudflared      # set TUNNEL_TOKEN
+             rc-service cloudflared start
+             rc-update add cloudflared default
+        4. Peers connect with:  --peers wss://<your-hostname>/<path>
+
+files:
+  - path: /etc/.pve-ignore.resolv.conf
+    generator: dump
+    content: ""
+
+  - path: /etc/resolv.conf
+    generator: dump
+    mode: 0644
+    content: |
+      nameserver 1.1.1.1
+      nameserver 8.8.8.8
+
+  - path: /etc/periodic/daily/auto-upgrade
+    generator: dump
+    mode: 0755
+    content: |
+      #!/bin/sh
+      apk update && apk upgrade
+
+  - path: /etc/conf.d/easytier
+    generator: dump
+    mode: 0644
+    content: |
+      # bare --relay-network-whitelist + --relay-all-peer-rpc = RPC-only node
+      # (no data forwarding); add a whitelist entry to enable relaying.
+      EASYTIER_FLAGS="--multi-thread \
+      --listeners tcp://0.0.0.0:11010 \
+      --listeners udp://0.0.0.0:11010 \
+      --listeners ws://0.0.0.0:11011 \
+      --relay-network-whitelist \
+      --relay-all-peer-rpc \
+      --compression zstd"
+
+  - path: /etc/init.d/easytier
+    generator: dump
+    mode: 0755
+    content: |
+      #!/sbin/openrc-run
+      name="easytier"
+      description="EasyTier Mesh VPN Node"
+      command="/usr/local/bin/easytier-core"
+      command_args="$EASYTIER_FLAGS"
+      pidfile="/run/easytier.pid"
+      command_background=true
+
+      depend() {
+        need net
+        after firewall
+      }
+
+      start_pre() {
+        if [ -z "$EASYTIER_FLAGS" ]; then
+          eerror "EASYTIER_FLAGS is not set in /etc/conf.d/easytier"
+          return 1
+        fi
+      }
+
+  - path: /etc/conf.d/cloudflared
+    generator: dump
+    mode: 0644
+    content: |
+      # Paste the tunnel token from Zero Trust dashboard; tunnel must point at
+      # http://localhost:11011 (cloudflared handles the WS upgrade).
+      TUNNEL_TOKEN=""
+
+  - path: /etc/init.d/cloudflared
+    generator: dump
+    mode: 0755
+    content: |
+      #!/sbin/openrc-run
+      name="cloudflared"
+      description="Cloudflare Tunnel for EasyTier WS listener"
+      command="/usr/local/bin/cloudflared"
+      command_args="tunnel --no-autoupdate run --token $TUNNEL_TOKEN"
+      pidfile="/run/cloudflared.pid"
+      command_background=true
+
+      depend() {
+        need net
+        after easytier
+      }
+
+      start_pre() {
+        if [ -z "$TUNNEL_TOKEN" ]; then
+          eerror "Cloudflare tunnel token is not configured."
+          eerror "Edit /etc/conf.d/cloudflared and set TUNNEL_TOKEN."
+          return 1
+        fi
+      }
+
+packages:
+  manager: apk
+  update: true
+  cleanup: true
+  sets:
+    - packages:
+        - alpine-base
+        - openrc
+        - ca-certificates
+        - tzdata
+        - unzip
+      action: install
+
+actions:
+  - trigger: post-packages
+    action: |-
+      #!/bin/sh
+      set -e
+      cd /tmp
+
+      echo ">>> Resolving latest EasyTier release..."
+      ET_VER=$(wget -qO- https://api.github.com/repos/EasyTier/EasyTier/releases/latest \
+        | grep '"tag_name"' | head -1 | cut -d'"' -f4)
+      [ -n "$ET_VER" ] || { echo "Failed to resolve EasyTier version"; exit 1; }
+
+      echo ">>> Installing EasyTier $ET_VER..."
+      wget -qO easytier.zip \
+        "https://github.com/EasyTier/EasyTier/releases/download/${ET_VER}/easytier-linux-x86_64-${ET_VER}.zip"
+      unzip -qo easytier.zip
+      install -m 0755 easytier-linux-x86_64/easytier-core /usr/local/bin/easytier-core
+      install -m 0755 easytier-linux-x86_64/easytier-cli  /usr/local/bin/easytier-cli
+      rm -rf /tmp/easytier.zip /tmp/easytier-linux-x86_64
+
+      echo ">>> Installing latest cloudflared..."
+      wget -qO /usr/local/bin/cloudflared \
+        https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+      chmod 0755 /usr/local/bin/cloudflared
+
+  - trigger: post-files
+    action: |-
+      #!/bin/sh
+      set -e
+
+      echo ">>> Configuring System..."
+
+      cp /usr/share/zoneinfo/Etc/GMT-8 /etc/localtime
+      echo "Etc/GMT-8" > /etc/timezone
+
+      rc-update add easytier default
+      rc-update add crond default
+      rc-update add networking boot
+
+      rm -rf /var/cache/apk/*
+
+      echo ">>> Build Complete!"
