@@ -293,6 +293,10 @@ packages:
   manager: apt
   update: true
   cleanup: true
+  repositories:
+    - name: sources.list
+      url: |-
+        deb http://deb.debian.org/debian {{ image.release }} main non-free-firmware
   sets:
     - packages:
         - systemd-sysv
@@ -409,6 +413,7 @@ packages:
         - cloud-init
         - acpid
         - qemu-guest-agent
+        - firmware-linux
       action: install
       types:
         - vm
