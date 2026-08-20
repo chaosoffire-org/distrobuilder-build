@@ -823,7 +823,10 @@ actions:
 
       systemctl enable serial-getty@ttyS0.service
       systemctl enable acpid
-      systemctl enable qemu-guest-agent
+      # qemu-guest-agent.service in trixie has no [Install] section (it is
+      # auto-activated via BindTo=dev-virtio...org.qemu.guest_agent.0.device).
+      # `systemctl enable` errors out by design, so tolerate the failure.
+      systemctl enable qemu-guest-agent.service || true
       systemctl enable cloud-init-local.service cloud-init-network.service cloud-init-main.service cloud-config.service cloud-final.service
 
       # Kernel cmdline for xterm.js (matches k8s-alma pattern)
