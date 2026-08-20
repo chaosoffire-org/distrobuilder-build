@@ -472,6 +472,7 @@ actions:
         docker-buildx-plugin \
         docker-compose-plugin \
         gh \
+        just \
         zulu17-jdk \
         zulu21-jdk \
         zulu25-jdk
@@ -539,10 +540,9 @@ actions:
       curl -fsSL https://bun.sh/install | bash
       # Bun installs to $HOME/.bun
 
-      # --- just (command runner, Makefile alternative) via cargo ---
-      # Rust/Cargo is already installed above; just is a pure Rust crate.
-      . "$HOME/.cargo/env"
-      cargo install just
+      # --- just (command runner) is installed via apt in the docker/apt action
+      # above; the cargo fallback was unreliable due to blake3 v1.5.0 pulling a
+      # yanked proc-macro1 from the crates.io index.
 
       # --- Kotlin compiler (JetBrains GitHub releases, non-interactive) ---
       # Debian trixie's apt kotlin is frozen at 1.3.31 (too old); use official release.
@@ -670,9 +670,9 @@ actions:
         sh /tmp/rustup-init.sh -y --default-toolchain stable --profile default --no-modify-path
         rm -f /tmp/rustup-init.sh
 
-        # --- just via cargo (chaos'"'"'s own cargo) ---
-        . "$HOME/.cargo/env"
-        cargo install just
+        # --- just (command runner) is installed system-wide via apt; chaos picks it
+        # up from /usr/bin, no per-user install needed (cargo install just was
+        # unreliable — blake3 v1.5.0 depends on a yanked proc-macro1).
 
         # --- Rust: cross-compile targets + rust-analyzer + cargo-zigbuild + cross ---
         rustup target add \
