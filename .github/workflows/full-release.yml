@@ -4,16 +4,21 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version (e.g., v1.0.0)'
+        description: "Release version (e.g., v1.0.0)"
         required: true
         type: string
       prerelease:
-        description: 'Mark as pre-release'
+        description: "Mark as pre-release"
         required: false
         default: false
         type: boolean
       draft:
-        description: 'Create as draft'
+        description: "Create as draft"
+        required: false
+        default: false
+        type: boolean
+      include_oversized:
+        description: "Include oversized artifacts (>2GB, e.g. dev-debian VM qcow2). May fail if any asset exceeds the GitHub release size limit."
         required: false
         default: false
         type: boolean
@@ -58,7 +63,7 @@ jobs:
       fail-fast: false
       max-parallel: 5
       matrix: ${{ fromJson(needs.discover.outputs.matrix) }}
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -106,9 +111,9 @@ jobs:
         run: |
           BASENAME=$(basename "$CONFIG" .yaml)
           BASENAME=$(basename "$BASENAME" .yml)
-          
+
           mkdir -p dist
-          
+
           # Build LXC if supported
           if grep -q "targets:" "$CONFIG" && grep -q "lxc:" "$CONFIG"; then
             echo "🔧 Building LXC..."
@@ -117,7 +122,7 @@ jobs:
             [ -f "dist/meta.tar.xz" ] && mv dist/meta.tar.xz "dist/${BASENAME}-lxc-metadata.tar.xz"
             echo "✅ LXC build completed: ${BASENAME}" >> $GITHUB_STEP_SUMMARY
           fi
-          
+
           # Build VM if supported
           if grep -q "incus:" "$CONFIG" && grep -A5 "incus:" "$CONFIG" | grep -q "vm:"; then
             echo "🔧 Building VM..."
@@ -126,6 +131,11 @@ jobs:
             [ -f "dist/incus.tar.xz" ] && mv dist/incus.tar.xz "dist/${BASENAME}-vm-metadata.tar.xz"
             echo "✅ VM build completed: ${BASENAME}" >> $GITHUB_STEP_SUMMARY
           fi
+
+          # Oversized artifacts (>2GB GitHub release asset limit) are kept in
+          # dist/ for the workflow artifact upload (30-day retention). The
+          # release job moves them out of dist/ before the release upload unless
+          # `include_oversized: true` is passed.
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v6
@@ -138,7 +148,7 @@ jobs:
   release:
     needs: [discover, build]
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -149,6 +159,24 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - name: List artifact sizes
+        run: |
+          echo "## Artifact sizes" >> $GITHUB_STEP_SUMMARY
+          find dist -maxdepth 1 -type f -printf '%s\t%p\n' | sort -n > /tmp/artifact_sizes.txt
+          awk -F'\t' '{ printf "  %.1f MB — %s\n", $1/1024/1024, $2 }' /tmp/artifact_sizes.txt >> $GITHUB_STEP_SUMMARY
+
+      - name: Move oversized artifacts (>2GB, exceed GitHub release asset limit)
+        if: ${{ !inputs.include_oversized }}
+        run: |
+          mkdir -p dist/oversized
+          # Find files in dist/ that exceed the 2GB GitHub release asset limit and move
+          # them to dist/oversized/. The release upload uses 'dist/*' which does not recurse
+          # by default with softprops/action-gh-release@v2, so oversized files are skipped.
+          find dist -maxdepth 1 -type f -size +2147483648c -exec mv -v {} dist/oversized/ \;
+          echo ""
+          echo "📦 Oversized artifacts kept as workflow artifacts (not in release):"
+          ls -lh dist/oversized/ 2>/dev/null || echo "(none)"
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
@@ -156,18 +184,18 @@ jobs:
           name: "Release ${{ inputs.version }}"
           body: |
             ## 🚀 Release ${{ inputs.version }}
-            
+
             **Commit**: ${{ github.sha }}
-            
+
             ### Built Images
             - `*-lxc-rootfs.tar.xz` / `*-lxc-metadata.tar.xz` - LXC containers
             - `*-vm.qcow2` / `*-vm-metadata.tar.xz` - VM images
-            
+
             ### Usage
             ```bash
             # LXC
             lxc image import <name>-lxc-metadata.tar.xz <name>-lxc-rootfs.tar.xz --alias <alias>
-            
+
             # VM (Incus)
             incus image import <name>-vm-metadata.tar.xz <name>-vm.qcow2 --alias <alias>
             ```
