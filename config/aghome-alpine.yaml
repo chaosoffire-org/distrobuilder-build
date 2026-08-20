@@ -5,7 +5,7 @@ image:
 
 source:
   downloader: alpinelinux-http
-  url: https://na.edge.kernel.org/alpine
+  url: https://dl-cdn.alpinelinux.org/alpine
   keyserver: hkp://keyserver.ubuntu.com
   keys:
     # Alpine Linux Universal Key
@@ -58,10 +58,10 @@ packages:
   cleanup: true
   sets:
     - packages:
-      - alpine-base
-      - openrc
-      - ca-certificates
-      - tzdata
+        - alpine-base
+        - openrc
+        - ca-certificates
+        - tzdata
       action: install
 
 actions:
@@ -71,20 +71,20 @@ actions:
       cd /opt
       echo "Downloading with BusyBox wget..."
       wget -qO- https://static.adguard.com/adguardhome/release/AdGuardHome_linux_amd64.tar.gz | tar -xz
-  
+
   - trigger: post-files
     action: |-
       #!/bin/sh
       set -e
 
       echo ">>> Configuring System..."
-      
+
       cp /usr/share/zoneinfo/Etc/GMT-8 /etc/localtime
       echo "Etc/GMT-8" > /etc/timezone
-      
+
       rc-update add adguardhome default
       rc-update add networking boot
-      
+
       if rc-service -e dnsmasq; then
           rc-update del dnsmasq default || true
       fi

@@ -1,11 +1,11 @@
 image:
-  distribution: 'almalinux'
+  distribution: "almalinux"
   release: 10
   architecture: x86_64
 
 source:
   downloader: almalinux-http
-  url: https://na.edge.kernel.org/almalinux
+  url: https://repo.almalinux.org/almalinux
   variant: boot
   keyserver: hkp://keyserver.ubuntu.com
   keys:

@@ -5,7 +5,7 @@ image:
 
 source:
   downloader: alpinelinux-http
-  url: https://na.edge.kernel.org/alpine
+  url: https://dl-cdn.alpinelinux.org/alpine
   keyserver: hkp://keyserver.ubuntu.com
   keys:
     # Alpine Linux Universal Key
