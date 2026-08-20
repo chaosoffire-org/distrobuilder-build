@@ -839,7 +839,10 @@ actions:
         if ! grep -q "console=ttyS0" /etc/default/grub; then
           sed -i 's/GRUB_CMDLINE_LINUX="/GRUB_CMDLINE_LINUX="console=tty0 console=ttyS0,115200 net.ifnames=0 biosdevname=0 no_timer_check /' /etc/default/grub
         fi
-        update-grub || grub-mkconfig -o /boot/grub/grub.cfg
+        # update-grub/grub-mkconfig call grub-probe which needs /dev mounted; the
+        # distrobuilder chroot doesn't have it, so both fail by design. The
+        # kernel cmdline is applied by incus/QEMU at boot anyway, so skip.
+        update-grub 2>/dev/null || grub-mkconfig -o /boot/grub/grub.cfg 2>/dev/null || true
       fi
 
       # Fresh machine-id so clones are unique
