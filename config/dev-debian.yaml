@@ -674,6 +674,10 @@ actions:
         # up from /usr/bin, no per-user install needed (cargo install just was
         # unreliable — blake3 v1.5.0 depends on a yanked proc-macro1).
 
+        # Source the rustup-managed cargo env so rustup/cargo are on PATH for
+        # the rest of this script.
+        . "$HOME/.cargo/env"
+
         # --- Rust: cross-compile targets + rust-analyzer + cargo-zigbuild + cross ---
         rustup target add \
           x86_64-pc-windows-gnu \
