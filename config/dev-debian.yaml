@@ -39,7 +39,7 @@ targets:
           fnm default lts-latest
   incus:
     vm:
-      size: 53687091200
+      size: 21474836480
       filesystem: ext4
 
 files:
